@@ -21,16 +21,28 @@ CARD_LABELS = {
 def fetch_santander_emails():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
-    mail.select("inbox")
 
+    # Buscar en todas las carpetas posibles (inbox, promociones, etc.)
+    folders = ["inbox", '"[Gmail]/All Mail"']
     since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
-    _, ids = mail.search(None, f'FROM "{SANTANDER_SENDER}" SINCE {since} SUBJECT "Pagaste"')
 
+    seen_ids = set()
     messages = []
-    for msg_id in ids[0].split():
-        _, data = mail.fetch(msg_id, "(RFC822)")
-        msg = email.message_from_bytes(data[0][1])
-        messages.append(msg)
+
+    for folder in folders:
+        result, _ = mail.select(folder)
+        if result != "OK":
+            continue
+        _, ids = mail.search(None, f'FROM "{SANTANDER_SENDER}" SINCE {since}')
+        for msg_id in ids[0].split():
+            if msg_id in seen_ids:
+                continue
+            seen_ids.add(msg_id)
+            _, data = mail.fetch(msg_id, "(RFC822)")
+            msg = email.message_from_bytes(data[0][1])
+            subject = str(msg.get("Subject", ""))
+            if "Pagaste" in subject or "pagaste" in subject:
+                messages.append(msg)
 
     mail.logout()
     return messages

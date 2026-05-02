@@ -34,30 +34,24 @@ def fetch_santander_emails():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
 
-    _, folder_list = mail.list()
-    print("Carpetas IMAP disponibles:")
-    for f in folder_list:
-        print(f"  {f.decode(errors='ignore')}")
-
-    since = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
+    since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
     seen = set()
     messages = []
 
-    searches = [
-        ('"[Gmail]/All Mail"', f'FROM "santander.com.ar" SINCE {since}'),
-        ('"[Gmail]/All Mail"', f'SUBJECT "Pagaste" SINCE {since}'),
-        ('"[Gmail]/All Mail"', 'FROM "santander.com.ar"'),
-        ("inbox", f'FROM "santander.com.ar" SINCE {since}'),
+    # Buscar en todas las carpetas posibles (español e inglés)
+    folders_to_try = [
+        "INBOX",
+        '"[Gmail]/Todos"',
+        '"[Gmail]/All Mail"',
     ]
 
-    for folder, query in searches:
+    for folder in folders_to_try:
         result, _ = mail.select(folder, readonly=True)
         if result != "OK":
-            print(f"  No se pudo abrir {folder}")
             continue
-        _, ids = mail.search(None, query)
+        _, ids = mail.search(None, f'FROM "santander.com.ar" SINCE {since}')
         found = ids[0].split() if ids[0] else []
-        print(f"  [{folder}] '{query}' -> {len(found)} resultado(s)")
+        print(f"[{folder}] {len(found)} mails de Santander")
         for msg_id in found:
             if msg_id in seen:
                 continue
@@ -65,12 +59,12 @@ def fetch_santander_emails():
             _, data = mail.fetch(msg_id, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
             subject = decode_subject(msg)
-            print(f"    Asunto: {subject}")
             if "pagaste" in subject.lower():
                 messages.append(msg)
+                print(f"  + {subject}")
 
     mail.logout()
-    print(f"Total mails de gastos encontrados: {len(messages)}")
+    print(f"Total mails de gastos: {len(messages)}")
     return messages
 
 
@@ -79,25 +73,39 @@ def extract_html(msg):
         for part in msg.walk():
             if part.get_content_type() == "text/html":
                 return part.get_payload(decode=True).decode("utf-8", errors="ignore")
-    return msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+    payload = msg.get_payload(decode=True)
+    if payload:
+        return payload.decode("utf-8", errors="ignore")
+    return ""
 
 
 def parse_expense(msg):
     html = extract_html(msg)
+    if not html:
+        print("  ERROR: no se pudo extraer HTML")
+        return None
+
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(separator="\n")
+    text = soup.get_text(separator=" ")
+
+    # Normalizar espacios
+    text = re.sub(r'\s+', ' ', text)
+    print(f"  Texto extraído (primeros 300 chars): {text[:300]}")
 
     def find(pattern):
-        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        m = re.search(pattern, text, re.IGNORECASE)
         return m.group(1).strip() if m else None
 
-    card = find(r"terminada en (\d{4})")
-    monto = find(r"Monto\s+\$([0-9.,]+)")
-    cuotas = find(r"Cuotas\s+(\d+)")
-    comercio = find(r"Comercio\s+([^\n]+)")
-    fecha = find(r"Fecha\s+(\d{2}/\d{2}/\d{4})")
+    card    = find(r"terminada en\s*(\d{4})")
+    monto   = find(r"Monto\s*\$?\s*([0-9.,]+)")
+    cuotas  = find(r"Cuotas\s*(\d+)")
+    comercio = find(r"Comercio\s+([A-Z0-9 .,&'-]+?)(?:\s{2,}|\s*Fecha|\s*Hora|\s*$)")
+    fecha   = find(r"Fecha\s*(\d{2}/\d{2}/\d{4})")
+
+    print(f"  card={card} monto={monto} cuotas={cuotas} comercio={comercio} fecha={fecha}")
 
     if not card or not monto:
+        print("  WARN: no se pudo parsear card o monto")
         return None
 
     return {
@@ -224,7 +232,7 @@ def main():
             expenses_by_card[expense["card"]].append(expense)
 
     for card_id, label in CARD_LABELS.items():
-        print(f"  {label}: {len(expenses_by_card[card_id])} gasto(s)")
+        print(f"{label}: {len(expenses_by_card[card_id])} gasto(s)")
 
     send_summary(expenses_by_card)
 

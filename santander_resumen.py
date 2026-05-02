@@ -7,11 +7,11 @@ import re
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import decode_header
 from bs4 import BeautifulSoup
 
 GMAIL_EMAIL = os.environ["GMAIL_EMAIL"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
-SANTANDER_SENDER = "mensajesyavisos@mails.santander.com.ar"
 CARD_LABELS = {
     "7527": "Visa Crédito ••••7527",
     "5295": "Tarjeta ••••5295",
@@ -19,7 +19,6 @@ CARD_LABELS = {
 
 
 def decode_subject(msg):
-    from email.header import decode_header
     raw = msg.get("Subject", "")
     parts = decode_header(raw)
     subject = ""
@@ -35,32 +34,43 @@ def fetch_santander_emails():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
 
-    folders = ["inbox", '"[Gmail]/All Mail"', '"[Gmail]/Spam"']
-    since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
+    _, folder_list = mail.list()
+    print("Carpetas IMAP disponibles:")
+    for f in folder_list:
+        print(f"  {f.decode(errors='ignore')}")
 
-    seen_subjects = set()
+    since = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
+    seen = set()
     messages = []
 
-    for folder in folders:
+    searches = [
+        ('"[Gmail]/All Mail"', f'FROM "santander.com.ar" SINCE {since}'),
+        ('"[Gmail]/All Mail"', f'SUBJECT "Pagaste" SINCE {since}'),
+        ('"[Gmail]/All Mail"', 'FROM "santander.com.ar"'),
+        ("inbox", f'FROM "santander.com.ar" SINCE {since}'),
+    ]
+
+    for folder, query in searches:
         result, _ = mail.select(folder, readonly=True)
         if result != "OK":
+            print(f"  No se pudo abrir {folder}")
             continue
-        _, ids = mail.search(None, f'FROM "{SANTANDER_SENDER}" SINCE {since}')
-        if not ids[0]:
-            continue
-        print(f"  Carpeta {folder}: {len(ids[0].split())} mails de Santander encontrados")
-        for msg_id in ids[0].split():
+        _, ids = mail.search(None, query)
+        found = ids[0].split() if ids[0] else []
+        print(f"  [{folder}] '{query}' -> {len(found)} resultado(s)")
+        for msg_id in found:
+            if msg_id in seen:
+                continue
+            seen.add(msg_id)
             _, data = mail.fetch(msg_id, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
             subject = decode_subject(msg)
-            key = subject + str(msg.get("Date", ""))
-            if key in seen_subjects:
-                continue
-            seen_subjects.add(key)
+            print(f"    Asunto: {subject}")
             if "pagaste" in subject.lower():
                 messages.append(msg)
 
     mail.logout()
+    print(f"Total mails de gastos encontrados: {len(messages)}")
     return messages
 
 
@@ -190,7 +200,7 @@ def send_summary(expenses_by_card):
     )
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Resumen semanal Santander — {week_str} | Total: {format_ars(total)}"
+    msg["Subject"] = f"Resumen semanal Santander - {week_str} | Total: {format_ars(total)}"
     msg["From"] = GMAIL_EMAIL
     msg["To"] = GMAIL_EMAIL
 
@@ -200,13 +210,12 @@ def send_summary(expenses_by_card):
         server.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
         server.sendmail(GMAIL_EMAIL, GMAIL_EMAIL, msg.as_string())
 
-    print(f"✓ Resumen enviado a {GMAIL_EMAIL} — Total: {format_ars(total)}")
+    print(f"Resumen enviado - Total: {format_ars(total)}")
 
 
 def main():
-    print("Buscando mails de Santander de los últimos 7 días...")
+    print("Buscando mails de Santander...")
     messages = fetch_santander_emails()
-    print(f"  {len(messages)} mails con gastos encontrados.")
 
     expenses_by_card = {card: [] for card in CARD_LABELS}
     for msg in messages:
@@ -215,8 +224,7 @@ def main():
             expenses_by_card[expense["card"]].append(expense)
 
     for card_id, label in CARD_LABELS.items():
-        count = len(expenses_by_card[card_id])
-        print(f"  {label}: {count} gasto(s)")
+        print(f"  {label}: {len(expenses_by_card[card_id])} gasto(s)")
 
     send_summary(expenses_by_card)
 

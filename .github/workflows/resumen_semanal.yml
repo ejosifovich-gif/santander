@@ -1,0 +1,29 @@
+name: Resumen semanal Santander
+
+on:
+  schedule:
+    # Domingos a las 23:00 UTC = 20:00 Argentina (UTC-3)
+    - cron: "0 23 * * 0"
+  workflow_dispatch:
+
+jobs:
+  enviar-resumen:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar script
+        env:
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python santander_resumen.py

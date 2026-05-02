@@ -18,30 +18,46 @@ CARD_LABELS = {
 }
 
 
+def decode_subject(msg):
+    from email.header import decode_header
+    raw = msg.get("Subject", "")
+    parts = decode_header(raw)
+    subject = ""
+    for part, enc in parts:
+        if isinstance(part, bytes):
+            subject += part.decode(enc or "utf-8", errors="ignore")
+        else:
+            subject += str(part)
+    return subject
+
+
 def fetch_santander_emails():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
 
-    # Buscar en todas las carpetas posibles (inbox, promociones, etc.)
-    folders = ["inbox", '"[Gmail]/All Mail"']
+    folders = ["inbox", '"[Gmail]/All Mail"', '"[Gmail]/Spam"']
     since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
 
-    seen_ids = set()
+    seen_subjects = set()
     messages = []
 
     for folder in folders:
-        result, _ = mail.select(folder)
+        result, _ = mail.select(folder, readonly=True)
         if result != "OK":
             continue
         _, ids = mail.search(None, f'FROM "{SANTANDER_SENDER}" SINCE {since}')
+        if not ids[0]:
+            continue
+        print(f"  Carpeta {folder}: {len(ids[0].split())} mails de Santander encontrados")
         for msg_id in ids[0].split():
-            if msg_id in seen_ids:
-                continue
-            seen_ids.add(msg_id)
             _, data = mail.fetch(msg_id, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
-            subject = str(msg.get("Subject", ""))
-            if "Pagaste" in subject or "pagaste" in subject:
+            subject = decode_subject(msg)
+            key = subject + str(msg.get("Date", ""))
+            if key in seen_subjects:
+                continue
+            seen_subjects.add(key)
+            if "pagaste" in subject.lower():
                 messages.append(msg)
 
     mail.logout()
@@ -190,7 +206,7 @@ def send_summary(expenses_by_card):
 def main():
     print("Buscando mails de Santander de los últimos 7 días...")
     messages = fetch_santander_emails()
-    print(f"  {len(messages)} mails encontrados.")
+    print(f"  {len(messages)} mails con gastos encontrados.")
 
     expenses_by_card = {card: [] for card in CARD_LABELS}
     for msg in messages:
